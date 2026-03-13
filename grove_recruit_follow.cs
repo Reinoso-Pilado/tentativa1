@@ -45,13 +45,18 @@
 //      timeout de 5 segundos para evitar travamento.
 //
 // Modulo 3 — ESTILOS DE CONDUCAO (traffic_behaviour — 00AE)
-//   Valor 0 (STOPFORCARS)          — para em semaforos/transito
-//   Valor 1 (SLOWDOWNFORCARS)      — desacelera perto de carros
-//   Valor 2 (AVOIDCARS)            — ignora semaforo, desvia carros
-//   Valor 3 (PLOUGHTHROUGH)        — ignora tudo (nao usar p/ aliados)
-//   Valor 5 (FOLLOWTRAFFIC_AVOIDCARS) — respeita sinal + desvia lentidao
-//   >>> Este mod usa modo 2 (seguimento) e modo 1 (aproximacao a pe).
-//   >>> Para situacao mais realista, substituir modo 2 por modo 5.
+//   Enum DrivingMode (More docs/enums.txt):
+//   Valor 0 (StopForCars)                  — respeita sinal E enfileira atras de carros (comportamento civil autentico)
+//   Valor 1 (SlowDownForCars)              — respeita sinal, reduz velocidade perto de carros (pode ainda bater)
+//   Valor 2 (AvoidCars)                    — ignora semaforo, desvia ativamente de carros
+//   Valor 3 (PloughThrough)                — ignora tudo (nao usar p/ aliados)
+//   Valor 4 (StopForCarsIgnoreLights)      — enfileira atras de carros, ignora semaforo
+//   Valor 5 (AvoidCarsObeyLights)          — respeita sinal E desvia/contorna carros (mais agressivo que o 0)
+//   Valor 6 (AvoidCarsStopForPedsObeyLights) — como 5 mas tambem para por pedestres
+//
+//   Este mod usa modo 0 (StopForCars) em ambas as situacoes:
+//   o recruta enfileira no transito e para no vermelho, como um motorista civil normal.
+//   Alternativa para contornar obstaculos sem perder o sinal: modo 5 (AvoidCarsObeyLights).
 //
 // Nota — erro 0097 (parameter type mismatch):
 //   Todos os handles de ped/carro sao inteiros; coordenadas sao
@@ -251,21 +256,21 @@
 // Ref: GTAMods Wiki — opcode 07F8
 // Ref: ThirteenAG/III.VC.SA.CLEOScripts (exemplos de follow_car)
 00AD: set_car 11@ max_speed_to 50.0
-00AE: set_car 11@ traffic_behaviour_to 2
+00AE: set_car 11@ traffic_behaviour_to 0
 07F8: car 11@ follow_car 22@ radius 10.0
 0002: jump @MAIN_LOOP
 
 // JOGADOR A PE:
 // 00A7: car drive_to X Y Z — pathfinding nativo ate coordenada.
 // Atualizado a cada 300ms para seguir o jogador enquanto caminha.
-// traffic_behaviour 1 (SLOWDOWNFORCARS): abordagem mais cautelosa,
-// evita atropelar civis quando o recruta se aproxima do jogador.
+// traffic_behaviour 0 (StopForCars): comportamento civil autentico —
+// respeita semaforos e enfileira atras de carros como qualquer motorista normal.
 // Ref: GTAMods Wiki — opcode 00A7
 :FOLLOW_PLAYER_ON_FOOT
 // 00A0: binary order (char_handle, →outX, →outY, →outZ) — 3@ = player actor handle.
 00A0: 3@ 6@ 7@ 8@
 00AD: set_car 11@ max_speed_to 25.0
-00AE: set_car 11@ traffic_behaviour_to 1
+00AE: set_car 11@ traffic_behaviour_to 0
 00A7: car 11@ drive_to 6@ 7@ 8@
 0002: jump @MAIN_LOOP
 
@@ -456,13 +461,13 @@
 //   Ref: Project Cerbera — velocidades reais de handling SA
 //        https://projectcerbera.com/gta/sa/tutorials/handling
 //
-// 00AE: set_car traffic_behaviour_to (int, ver tabela no README)
-//   Modo 2 (AVOIDCARS): ignora semaforos mas desvia ativamente
-//   de outros carros. Escolhido pois o recruta e aliado — nao
-//   pode atropelar civis (geraria wanted level desnecessario).
-//   Alternativa mais realista: modo 5 (FOLLOWTRAFFIC_AVOIDCARS).
+// 00AE: set_car traffic_behaviour_to (int, ver tabela no README e enums.txt)
+//   Modo 0 (StopForCars): respeita semaforos e enfileira atras de carros,
+//   exatamente como um motorista civil normal — para no vermelho, aguarda
+//   a fila andar. Escolhido para comportamento autentico de transito.
+//   Alternativa se quiser que o recruta contorne obstaculos: modo 5 (AvoidCarsObeyLights).
 //   Ref: GTAMods Wiki — opcode 00AE
-//   Ref: yugecin/scmcleoscripts (comparacao de modos de conducao)
+//   Ref: More docs/enums.txt — enum DrivingMode
 //
 // 00AF: set_car driver_behaviour_to (int)
 //   Valor 5: motorista responsivo — corrige trajetoria rapidamente,

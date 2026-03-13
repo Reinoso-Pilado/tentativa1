@@ -74,15 +74,28 @@ Ao pressionar **U**, o sistema executa a sequência:
 
 Este é o **coração** do mod. O opcode `00AE` define como o motorista IA interage com o trânsito:
 
-| Valor | Constante | Comportamento |
-|-------|-----------|---------------|
-| `0` | `STOPFORCARS` | Para em semáforos e no trânsito |
-| `1` | `SLOWDOWNFORCARS` | Desacelera perto de outros carros (usado quando jogador está **a pé**) |
-| `2` | **`AVOIDCARS`** | Ignora semáforos, desvia ativamente de carros (**modo padrão ao seguir**) |
-| `3` | `PLOUGHTHROUGH` | Ignora absolutamente tudo — **nunca usar para aliados** |
-| `5` | `FOLLOWTRAFFIC_AVOIDCARS` | Respeita semáforos **e** desvia de lentidão (alternativa mais realista) |
+| Valor | Constante (`enums.txt`) | Comportamento |
+|-------|------------------------|---------------|
+| `0` | **`StopForCars`** | Respeita semáforos **e** para/enfileira atrás de outros carros — **modo ativo neste mod** |
+| `1` | `SlowDownForCars` | Respeita semáforos, mas apenas reduz velocidade perto de outros carros — não desvia; ainda pode colidir |
+| `2` | `AvoidCars` | Ignora semáforos, desvia ativamente de carros |
+| `3` | `PloughThrough` | Ignora absolutamente tudo — **nunca usar para aliados** |
+| `4` | `StopForCarsIgnoreLights` | Para e enfileira atrás de carros, mas ignora semáforos |
+| `5` | `AvoidCarsObeyLights` | Respeita semáforos e desvia/contorna ativamente outros carros |
+| `6` | `AvoidCarsStopForPedsObeyLights` | Como o 5, mas também para por pedestres — o mais cauteloso |
 
-O mod usa **modo 2** no seguimento (equilíbrio entre velocidade e segurança) e **modo 1** quando o recruta se aproxima do jogador a pé (abordagem cautelosa evita atropelamentos).
+O mod usa **modo 0** (`StopForCars`) em ambas as situações: ao seguir o jogador em carro e ao se aproximar com ele a pé.
+
+> **Comparação entre os modos "civis" (0, 1 e 5):**
+>
+> | Modo | Para no vermelho? | Reage a carros à frente? | Enfileira no trânsito? |
+> |------|------------------|--------------------------|------------------------|
+> | `0` `StopForCars` | ✅ Sim | 🔴 Para e aguarda a fila andar | ✅ **Sim — comportamento civil autêntico** |
+> | `1` `SlowDownForCars` | ✅ Sim | 🟡 Só reduz velocidade — ainda pode bater | ❌ Não |
+> | `5` `AvoidCarsObeyLights` | ✅ Sim | ✅ Desvia e contorna ativamente | ❌ Não — ele sai da fila |
+>
+> **Por que o modo 0 e não o 5?** O modo 5 respeita sinais mas *contorna* os carros que bloqueiam — o recruta nunca fica preso numa fila, sempre acha um caminho alternativo. O modo 0 é o único que realmente enfileira e espera, exatamente como qualquer motorista civil faria num cruzamento ou engarrafamento.
+> Fonte: [`More docs/enums.txt` — enum `DrivingMode`](More%20docs/enums.txt) · [GTAMods Wiki — opcode 00AE](https://gtamods.com/wiki/00AE).
 
 ---
 
