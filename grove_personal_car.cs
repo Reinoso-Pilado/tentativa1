@@ -18,15 +18,19 @@
 //               ficheiro — modelo, cores e mods restaurados.
 //
 // PERSISTENCIA:
-//   O carro e convertido para handle de script ao ser registado
-//   (00A5 + 072A + 01C3). O motor SA nao elimina carros de script
-//   por streaming enquanto o handle estiver numa variavel de script
-//   e 01C3 (remove_references) nao tiver sido chamado. Isto garante
-//   que o carro nao desaparece ao afastar o jogador dentro da mesma
-//   sessao.
-//   Entre sessoes (load/save), todos os handles sao invalidados pelo
-//   motor. Ao recarregar: o script le grove_personal_car.dat e
-//   recria o carro com os mesmos atributos ao chamar com 'O'.
+//   Ao registar (P), o handle do carro actual do jogador e guardado
+//   directamente em 2@ sem criar um "script car" (sem 00A5). Carros
+//   do mundo nunca sao guardados pelo sistema de save do SA como
+//   script cars, eliminando o crash ao recarregar saves ou novo jogo.
+//   O carro pode despoletar (streaming) se o jogador se afastar muito;
+//   nesse caso PC_CAR_LOST detecta e O recria-o via PC_RECREATE.
+//   PC_RECREATE usa 00A5+01C3: 00A5 cria o carro, 01C3 liberta
+//   imediatamente a propriedade de script (logo apos 00A5, antes dos
+//   mods) para que SA nao o salve — evita crash ao recarregar.
+//   Auto-deteccao (PC_AUTO_DETECT): se o jogador entra num carro com
+//   o mesmo modelo do pessoal enquanto 2@=0, o handle e re-registado
+//   automaticamente — cobre garagens SA e carro estacionado pela missao.
+//   Entre sessoes (load/save): recriado automaticamente com O.
 //
 // FORMATO DO FICHEIRO (grove_personal_car.dat — 100 bytes, binario):
 //   Offset  0: versao (int32 = 1)
@@ -45,6 +49,10 @@
 //   jogador deixou quando o registou. Nao ha override de IA —
 //   o carro fica parado ate o jogador entrar. Quando chamado,
 //   aparece no no de estrada mais proximo do jogador.
+//
+// CADEIA DE TECLAS (PC_MAIN_LOOP):
+//   P → se nao pressionado → CHECK_KEY_O
+//   O → se nao pressionado → PC_MAIN_LOOP (ultima tecla)
 //
 // NOTA TECNICA — MODELO (SA 1.0 US):
 //   SA nao tem opcode publico para ler o model_id de um car handle.
@@ -75,6 +83,7 @@
 // ===============================================================
 {$CLEO .cs}
 0000: NOP
+03A4: name_thread 'GPCAR'
 
 :PERSONAL_CAR_INIT
 0001: wait 2000 ms
@@ -165,7 +174,7 @@
 // Actualizacao da posicao em cache — so quando o carro existe e e valido
 00D6: if
     0038: 2@ > 0
-004D: jump_if_false @PC_KEY_P
+004D: jump_if_false @PC_AUTO_DETECT
 
 00D6: if
     056E: car 2@ defined
@@ -176,10 +185,53 @@
 0002: jump @PC_KEY_P
 
 :PC_CAR_LOST
-// Handle perdeu validade (carro destruido, bug de script, etc.)
-// Marcamos 2@ = 0 mas mantemos 12@=1 e os atributos para poder recriar.
+// Handle perdeu validade (streaming, missao, garagem, etc.)
+// Marcamos 2@ = 0 mas mantemos 12@=1 e atributos para poder recriar.
 0006: 2@ = 0
-0ACD: show_text_highpriority "Carro pessoal perdido! O para recriar." 3000
+0ACD: show_text_highpriority "Carro pessoal despawnado. O=recriar | P=registar outro." 3000
+
+// ---------------------------------------------------------------
+// Auto-deteccao de carro de garagem / carro estacionado pela missao
+//
+// Se o carro pessoal esta perdido (2@=0) mas ha dados validos (12@>0),
+// e o jogador esta a conduzir um carro com o mesmo modelo guardado (3@),
+// esse carro e automaticamente re-registado como pessoal.
+//
+// Casos cobertos:
+//   Garagem SA: o jogador entra na garagem com o carro pessoal; SA salva-o
+//     com novo handle; ao sair da garagem o jogador conduz esse carro —
+//     este bloco detecta o modelo coincidente e recupera o registo.
+//   Missao SA: SA por vezes estaciona o carro do jogador no final da missao
+//     (comportamento vanilla). O jogador entra nesse carro → auto-registo.
+//   Spawn manual (O): o jogador pressiona O, o carro recriado e criado na
+//     estrada, o jogador entra → este bloco nao interfere (2@ ja e >0).
+//
+// Limitacao: se o jogador entrar num carro DIFERENTE com o mesmo modelo
+// que o pessoal, esse carro sera auto-registado. Pressionar P no carro
+// desejado resolve (re-registo manual com escrita no .dat).
+// ---------------------------------------------------------------
+:PC_AUTO_DETECT
+00D6: if
+    0038: 2@ == 0
+004D: jump_if_false @PC_KEY_P
+00D6: if
+    0038: 12@ > 0
+004D: jump_if_false @PC_KEY_P
+00D6: if
+    00DF: actor 0@ driving
+004D: jump_if_false @PC_KEY_P
+// Ler modelo do carro actual do jogador via struct de memoria (offset 0x22)
+03C0: 0@ 1@
+0A97: 1@ 10@
+000A: 10@ += 34
+0A8D: 10@ 2 0 10@
+// Comparar modelo com o guardado
+00D6: if
+    0038: 10@ == 3@
+004D: jump_if_false @PC_KEY_P
+// Modelo coincide — re-registar como carro pessoal (apenas handle; .dat inalterado)
+0006: 2@ = 1@
+0ACD: show_text_highpriority "Carro pessoal reencontrado! (garagem/missao) P=re-registar" 3000
 
 // ---------------------------------------------------------------
 // Tecla P (VK 80): Registar veiculo actual como pessoal
@@ -257,118 +309,27 @@
 096D: 1@ 14 30@
 096D: 1@ 15 31@
 
-// Criar carro de script com os mesmos atributos no mesmo local
-// 00A5: binario P1=model, P2=x, P3=y, P4=z, P5=→handle
-00A5: 3@ 6@ 7@ 8@ 2@
-0175: set_car 2@ Z_angle_to 9@
-0229: set_car 2@ primary_color_to 4@ secondary_color_to 5@
+// Usar o carro actual directamente como carro pessoal.
+//
+// NAO usar 00A5 (create_car) aqui: 00A5 cria um "script car" que SA
+// regista na secao de veiculos de missao do save file. Ao recarregar
+// qualquer save ou iniciar novo jogo, SA tenta restaurar esse script
+// car mas o CLEO ja reiniciou com 2@=0 — handle invalido → crash
+// silencioso sem log.
+//
+// Solucao: 2@ recebe directamente o handle do carro do mundo (1@).
+// Carros do mundo nunca sao guardados como "script cars" no save.
+// O jogador ja esta no carro — nao e necessario 072A nem re-aplicar
+// mods (os mods ja estao no carro; foram lidos acima so para o .dat).
+// Se o streaming despoletar PC_CAR_LOST, O recria o carro via
+// PC_RECREATE (que usa 00A5+01C3 — seguro porque o player salva
+// apos a criacao, nao durante).
+0006: 2@ = 1@
 
-// Restaurar mods no novo carro de script
-// 06E7: binario P1=car, P2=model(o), P3=→handle (descartado em 10@)
-00D6: if
-    0019: 16@ > 0
-004D: jump_if_false @PC_MOD1
-06E7: 2@ 16@ 10@
-:PC_MOD1
-00D6: if
-    0019: 17@ > 0
-004D: jump_if_false @PC_MOD2
-06E7: 2@ 17@ 10@
-:PC_MOD2
-00D6: if
-    0019: 18@ > 0
-004D: jump_if_false @PC_MOD3
-06E7: 2@ 18@ 10@
-:PC_MOD3
-00D6: if
-    0019: 19@ > 0
-004D: jump_if_false @PC_MOD4
-06E7: 2@ 19@ 10@
-:PC_MOD4
-00D6: if
-    0019: 20@ > 0
-004D: jump_if_false @PC_MOD5
-06E7: 2@ 20@ 10@
-:PC_MOD5
-00D6: if
-    0019: 21@ > 0
-004D: jump_if_false @PC_MOD6
-06E7: 2@ 21@ 10@
-:PC_MOD6
-00D6: if
-    0019: 22@ > 0
-004D: jump_if_false @PC_MOD7
-06E7: 2@ 22@ 10@
-:PC_MOD7
-00D6: if
-    0019: 23@ > 0
-004D: jump_if_false @PC_MOD8
-06E7: 2@ 23@ 10@
-:PC_MOD8
-00D6: if
-    0019: 24@ > 0
-004D: jump_if_false @PC_MOD9
-06E7: 2@ 24@ 10@
-:PC_MOD9
-00D6: if
-    0019: 25@ > 0
-004D: jump_if_false @PC_MOD10
-06E7: 2@ 25@ 10@
-:PC_MOD10
-00D6: if
-    0019: 26@ > 0
-004D: jump_if_false @PC_MOD11
-06E7: 2@ 26@ 10@
-:PC_MOD11
-00D6: if
-    0019: 27@ > 0
-004D: jump_if_false @PC_MOD12
-06E7: 2@ 27@ 10@
-:PC_MOD12
-00D6: if
-    0019: 28@ > 0
-004D: jump_if_false @PC_MOD13
-06E7: 2@ 28@ 10@
-:PC_MOD13
-00D6: if
-    0019: 29@ > 0
-004D: jump_if_false @PC_MOD14
-06E7: 2@ 29@ 10@
-:PC_MOD14
-00D6: if
-    0019: 30@ > 0
-004D: jump_if_false @PC_MOD15
-06E7: 2@ 30@ 10@
-:PC_MOD15
-00D6: if
-    0019: 31@ > 0
-004D: jump_if_false @PC_MODS_DONE
-06E7: 2@ 31@ 10@
-:PC_MODS_DONE
-
-// Resistencia do carro pessoal: sem dano visual (como carros de missao),
-// saude reposta ao maximo. Fumo continua a aparecer quando saude e baixa
-// pois e controlado pelo limiar de saude, nao pelo flag de dano visual.
+// Resistencia: sem dano visual, saude reposta.
 // 0852: sem amassados/riscos visuais. 0224: HP total (int, max ~2000).
 0852: set_car 2@ damages_visible 0
 0224: set_car 2@ health_to 1750
-
-// Transferir o jogador para o novo carro de script
-// 072A: binario P1=actor, P2=car
-072A: 0@ 2@
-
-// Libertar referencia ao carro original do mundo
-// O carro de script (2@) e agora o carro pessoal — o original pode
-// desaparecer normalmente (tornamos-o "no longer needed" para o motor).
-// Nota: 01C3 em 1@ nao destroi o carro — apenas permite que o motor
-// o elimine quando o streaming o requerer. O jogador ja esta em 2@.
-// Se 1@ e o mesmo que 2@ (caso raro de loop), skip.
-00D6: if
-    0038: 1@ == 2@
-004D: jump_if_false @PC_RELEASE_OLD
-0002: jump @PC_SAVE_FILE
-:PC_RELEASE_OLD
-01C3: remove_references_to_car 1@
 
 // Guardar no ficheiro
 :PC_SAVE_FILE
@@ -429,6 +390,10 @@
 04D3: 10@ 11@ 14@ 0 10@ 11@ 14@
 000B: 10@ += 5.0
 00A5: 3@ 10@ 11@ 14@ 2@
+// Libertar propriedade de script imediatamente: 00A5 cria um "script car"
+// que SA guardaria no save; 01C3 logo apos converte-o em carro do mundo
+// antes de qualquer save possivel — elimina crash ao recarregar.
+01C3: remove_references_to_car 2@
 0175: set_car 2@ Z_angle_to 9@
 0229: set_car 2@ primary_color_to 4@ secondary_color_to 5@
 

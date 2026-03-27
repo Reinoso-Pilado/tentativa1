@@ -45,14 +45,111 @@
 //      timeout de 5 segundos para evitar travamento.
 //
 // Modulo 3 — ESTILOS DE CONDUCAO (traffic_behaviour — 00AE)
-//   Valor 0 (STOPFORCARS)      — para para outros carros/semaforos
-//   Valor 1 (SLOWDOWNFORCARS)  — desacelera perto de carros
-//   Valor 2 (AVOIDCARS)        — ignora semaforo, desvia carros
-//   Valor 3 (PLOUGHTHROUGH)    — ignora tudo (nao usar p/ aliados)
-//   Valor 4 (FOLLOWTRAFFIC)    — usa nos de rua SA: faz rotatorias,
-//                                 respeita semaforos, identico ao NPC
-//                                 de trafego padrao do jogo.
-//   >>> CIVICO usa modo 4 (follows roads); DIRETO usa modo 2 (direct).
+//   Opcode: 00AE set_car_driving_style, parametro = DrivingMode (enum).
+//   Todos os 7 valores confirmados em enums.txt do repositorio.
+//
+//   Valor 0 (StopForCars)               — obedece semaforos, para para
+//                                          carros/obstaculos. PADRAO dos
+//                                          NPCs civis do trafego do jogo.
+//   Valor 1 (SlowDownForCars)           — obedece semaforos, desacelera
+//                                          mas ainda pode bater.
+//   Valor 2 (AvoidCars)                 — ignora semaforos, desvia de carros.
+//   Valor 3 (PloughThrough)             — ignora tudo, bate em tudo.
+//   Valor 4 (StopForCarsIgnoreLights)   — IGNORA semaforos, para obstaculos.
+//                                          (nome enganoso — nao respeita luz)
+//   Valor 5 (AvoidCarsObeyLights)       — obedece semaforos E desvia. Hibrido.
+//   Valor 6 (AvoidCarsStopForPedsObeyLights) — obedece semaforos, desvia de
+//                                          carros E para para pedestres.
+//                                          Mais cauteloso que o 5. Existe, sim.
+//
+// Modulo 3b — MODOS DE CONDUCAO (tecla 4)
+//
+//   10 modos — tecla 4 cicla: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 0
+//
+//   OBJECTIVO: modos CIVICO tentam manter o recruta na faixa como um NPC
+//   normal do SA (road graph navigation). DIRETO e o fallback quando ele
+//   fica para tras ou nao ha estradas proximas. AUTONOMO permite avaliar
+//   a conducao do recruta independentemente do jogador.
+//   073B REMOVIDO: contramao permitida em todos os modos — melhora navegacao
+//   em cruzamentos onde o caminho correto exigia nodo de sentido oposto.
+//   DrivingMode=AvoidCars(2) em CIVICO-0/A/B/C/F/AUTONOMO:
+//     Desvia de carros e obstaculos, ignora semaforos.
+//     Curvas: recruta contorna obstaculos lateralmente sem parar.
+//     Interseccoes: ignora sinal vermelho (nao fica preso enquanto jogador avanca).
+//
+//   CIVICO-0 (29@=0) — 0407(-12m) + 04D3 + 00A7 + AvoidCars(2):
+//     Alvo: 12m ATRAS do carro do jogador (0407 Y=-12 espaco local).
+//     04D3: snap desse ponto para no de estrada SA mais proximo.
+//     00A7 (GotoCoords=8): drive_to via road graph (CarMission=GotoCoords).
+//     Recruta nunca atinge posicao exacta do jogador — evita colisao estruturalmente.
+//     Guard off-road: se no >50m do jogador (agua/montanha), nao despacha.
+//     AvoidCars(2). max 40 km/h. Threshold 3 ticks (0.9s).
+//
+//   CIVICO-A (29@=1) — 0407(-12m) + 04D3 + 02C2 (GotoCoordsAccurate=12) + AvoidCars(2):
+//     Alvo: 12m ATRAS (0407 Y=-12). 02C2 usa GotoCoordsAccurate internamente —
+//     caminho mais cuidadoso pelos road nodes vs GotoCoords(8) do CIVICO-0.
+//     Guard off-road: se no >50m do jogador, nao despacha.
+//     AvoidCars(2). max 40 km/h. Threshold 3 ticks (0.9s).
+//
+//   CIVICO-B (29@=2) — 0407(-12m) + 04D3 + 05D1 DriveMode=Normal(0) + AvoidCars(2):
+//     Alvo: 12m ATRAS (0407 Y=-12). DIFERENCA vs CIVICO-A: usa actor task (05D1)
+//     em vez de CarMission directa (02C2).
+//     DriveMode=Normal(0) → CCarAI_GetCarToGoToCoors → CarMission=GotoCoords(8) interno.
+//     Actor task gere "stuck" (TempAction=Reverse quando preso) — 02C2 nao tem isso.
+//     Guard off-road: se no >50m do jogador, nao despacha.
+//     AvoidCars(2). max 40 km/h. Threshold 3 ticks (0.9s).
+//
+//   CIVICO-C (29@=3) — 0407(-12m) + 04D3 + 05D1 DriveMode=Accurate(1) + AvoidCars(2):
+//     Alvo: 12m ATRAS (0407 Y=-12). DriveMode=Accurate(1) → CCarAI_GetCarToGoToCoorsAccurate
+//     → CarMission=GotoCoordsAccurate(12).
+//     Diferenca vs Normal: usa CCarCtrl_ClipTargetOrientationToLink para se alinhar
+//     melhor a faixa da estrada em curvas, e calcula travagem mais cedo.
+//     Normal pode cortar curvas; Accurate respeita a linha de faixa.
+//     Actor task (vs 02C2 directo do CIVICO-A): adiciona gestao de stuck.
+//     Guard off-road: se no >50m do jogador, nao despacha.
+//     AvoidCars(2). max 45 km/h. Threshold 7 ticks (2.1s).
+//
+//   CIVICO-D (29@=4) ★ MELHOR — 06E1 EscortRearFaraway(67) + AvoidCars(2):
+//     Formacao geometrica atras do carro do jogador. Road nodes.
+//     AvoidCars(2): desvia obstaculos sem parar. Sem 073B: contramao ok.
+//     Lida bem com areas sem estradas (06E1 usa IA interna do SA).
+//     max 35 km/h (cruise 35). Dedup por carro do jogador.
+//
+//   CIVICO-E (29@=5) ★ MELHOR — 06E1 FollowCarFaraway(52) + AvoidCars(2):
+//     Segue carro do jogador via road nodes. AvoidCars(2). Sem 073B.
+//     max 35 km/h (cruise 35). Dedup por carro do jogador.
+//
+//   CIVICO-F (29@=6) — 0407(-20m) + 04D3 + 02C2 + AvoidCars(2):
+//     0407: ponto 20m ATRAS do carro do jogador (Y=-20 eixo local).
+//     04D3: snap desse ponto para no de estrada SA mais proximo.
+//     02C2 (GotoCoordsAccurate=12): recruta sempre alvo ATRAS — nao bloqueia.
+//     Guarda anti-colisao: STOP (<8m), SLOW 15 km/h (<15m) — evita "derrapar na frente".
+//     Guard off-road: se no >50m do jogador, nao despacha.
+//     AvoidCars(2). Sem 073B. max 30 km/h. Threshold 5 ticks (1.5s).
+//
+//   DIRETO (29@=7):
+//     07F8: follow_car + AvoidCars(2). Direto A→B, ignora semaforos. Raio 20m.
+//     max 60 km/h. Dedup countdown 20 ticks (6s): re-issue periodica recupera stuck offroad/canal.
+//     Raio 20m: recruta aceita beira-de-canal/offroad como posicao valida (sem entrar no canal).
+//     Usar quando o recruta ficar para tras em CIVICO ou em zonas sem estradas.
+//
+//   AUTONOMO (29@=8) — 0AB6 GPS waypoint + 05D1 DriveMode=Accurate + AvoidCars(2):
+//     0AB6: le coords do waypoint do mapa (IF+SET).
+//     Se nao ha waypoint: para e pede para marcar ponto no mapa.
+//     05D1 DriveMode=Accurate(1): navegacao mais precisa para avaliacao.
+//     AvoidCars(2). Sem 073B. max 50 km/h. Threshold 30 ticks (9s): destino fixo.
+//     Uso: marcar waypoint no mapa, activar modo, seguir o recruta para avaliar.
+//
+//   PARADO (29@=9):
+//     00A9 cancela task activa + max_speed 0. Para completamente.
+//
+//   Dedup por tipo:
+//     CIVICO-0/A/B/C/F/AUTONOMO (0,1,2,3,6,8): contagem regressiva (30@>0=aguardar).
+//     CIVICO-D/E (4,5): dedup por carro do jogador (22@!=30@ re-emite).
+//     DIRETO (7): countdown 20 ticks (6s) — re-issue periodica recupera stuck offroad.
+//     Reset 30@=0 em CHECK_KEY_H (troca de modo): forca re-emissao imediata.
+//     Thresholds: 0/A/B=3 ticks (0.9s), C=7 ticks (2.1s), F=5 ticks (1.5s), AUTONOMO=30 ticks (9s).
+//   Guard off-road (CIVICO-0/A/B/C/F): 00EC 50m — se sem estrada proxima, recruta para.
 //
 // Nota — erro 0097 (parameter type mismatch):
 //   Todos os handles de ped/carro sao inteiros; coordenadas sao
@@ -65,7 +162,7 @@
 // ---------------------------------------------------------------
 //   12@ = 0  Nenhum recruta ativo
 //   12@ = 1  Recruta a pe  -> seguimento via 0850: task_follow_footsteps
-//   12@ = 2  Recruta em veiculo -> 07F8: follow_car / 00A7: drive_to
+//   12@ = 2  Recruta em veiculo -> 05D1/06E1: modos CIVICO / 07F8: follow_car (DIRETO)
 //   12@ = 3  Recruta dirige, jogador passageiro (05CA) -> 0407+00A7 navega a frente
 //
 //   Transicoes:
@@ -107,8 +204,12 @@
 //   26@        Contagem de membros do grupo (output de 07F6, gate de deteccao)
 //   27@        Handle do ped candidato a adocao (output de 092B slot 0, temp)
 //   28@        Contador de timeout para entrada do JOGADOR no carro (CHECK_KEY_G)
-//   29@        Modo de conducao (tecla 4): 0=CIVICO | 1=DIRETO | 2=PARADO
-//   30@        Handle do carro do jogador na ultima emissao de 07F8 (evita re-emissao desnecessaria)
+//   29@        Modo de conducao (tecla 4): 0=CIVICO-0(04D3+00A7+SFI4) | 1=CIVICO-A(04D3+02C2+SFI4) | 2=CIVICO-B(05D1 Normal+SFI4) | 3=CIVICO-C(05D1 Accurate+SFI4) | 4=CIVICO-D(EscortRear+AC2) | 5=CIVICO-E(FollowFar+AC2) | 6=CIVICO-F(Lookahead-30m+02C2+SFI4) | 7=DIRETO | 8=AUTONOMO(GPS waypoint+05D1 Accurate+SFI4) | 9=PARADO
+//   30@        Dedup de re-emissao:
+//              CIVICO-0/A/B/C/F/AUTONOMO/DIRETO (29@==0/1/2/3/6/7/8): contagem regressiva (>0=aguardar; 0=re-emitir)
+//              CIVICO-D/E (29@==4/5): handle carro jogador (22@) — re-emite quando muda
+//              Reset para 0 em CHECK_KEY_H, CLEANUP_DONE, SF_MODE_CHECK(PARADO),
+//              STATE2_TOO_FAR, SF_CHECK_BOAT, SF_CHECK_FLYING.
 //   31@        Interior ID do jogador na ultima sincronizacao (evita 0860 redundante)
 //
 // NOTA: Variaveis 32@ e 33@ sao RESERVADAS pelo motor RenderWare
@@ -133,6 +234,58 @@
 //   (endereco 0xB74494) e verificando flags de grupo/faccao com
 //   0A8D (read_memory). Cada recruta recrutado receberia um slot
 //   neste sistema de IA veicular avancada.
+//
+// ---------------------------------------------------------------
+// PLUGIN-SDK (DK22Pac/plugin-sdk) — EXPANSAO VIA ASI
+// Prototipo: grove_recruit_asi/grove_recruit_asi.cpp
+// Analise completa: grove_recruit_asi/PLUGINSDK_ANALISE.md
+// ---------------------------------------------------------------
+//   O DK22Pac/plugin-sdk e um SDK C++ para GTA SA que expoe as
+//   classes internas (CVehicle, CPed, CCarCtrl, CPathFind, etc.)
+//   como wrappers C++. Combinado com ASI Loader, permite criar
+//   plugins .asi (DLLs injectadas no processo) que correm a cada
+//   frame (~16 ms) em vez dos 300 ms minimos do CLEO.
+//
+//   COMO USAR:
+//     1. Instalar ASI Loader (d3d8.dll ThirteenAG ou ModLoader).
+//     2. git clone https://github.com/DK22Pac/plugin-sdk.git
+//     3. Visual Studio: includes + lib conforme grove_recruit_asi/PLUGINSDK_ANALISE.md
+//     4. Compilar grove_recruit_asi.cpp → .asi → copiar para pasta GTA SA.
+//     5. O .asi corre em paralelo com este CLEO — sem conflito.
+//
+//   O QUE O PROTOTIPO ASI FAZ MELHOR QUE ESTE SCRIPT:
+//
+//   A) SPEED ADAPTATIVA PARA CURVAS (impossivel em CLEO):
+//     CCarCtrl::FindSpeedMultiplierWithSpeedFromNodes(m_nStraightLineDistance)
+//       Retorna float [0.0,1.0]: 1.0=reta, <1.0=curva.
+//       ASI multiplica SPEED_MAX por este valor antes de cada curva.
+//       CLEO nao tem opcode equivalente.
+//
+//   B) DETECCAO AUTOMATICA DE OFFROAD (per-frame, sem intervencao):
+//     CCarCtrl::FindNodesThisCarIsNearestTo → no mais proximo.
+//     Se distancia > 30m: recruta offroad → PloughThrough + speed 60.
+//     CLEO faz isto a 300ms com guard manual (00EC+04D3).
+//
+//   C) ALINHAMENTO DE FAIXA EM TODOS OS MODOS:
+//     CCarCtrl::ClipTargetOrientationToLink → heading alinhado a faixa.
+//     Activo internamente so em DriveMode=Accurate (CIVICO-C).
+//     ASI aplica a qualquer modo, a cada frame.
+//
+//   D) CONTROLO DIRECTO DE CAutoPilot (per-frame, preciso):
+//     m_nCruiseSpeed (char) — escrita directa, sem arredondamento.
+//     m_nCarDrivingStyle    — muda atomicamente no frame certo.
+//     m_nCarMission         — ler missao actual sem opcode.
+//
+//   E) VARIOS RECRUTAS SIMULTANEOS:
+//     PoolIterator<CPed, CCopPed> sobre CPools::ms_pPedPool.
+//     Filtra m_nPedType==7 (GANG1) + bInVehicle + proximidade.
+//     Gere ate 7 recrutas em simultaneo; CLEO gere 1.
+//
+//   COEXISTENCIA CLEO + ASI:
+//     CLEO gere: teclas Y/U/G/H/N/B, spawn, entrada, modos (29@).
+//     ASI gere: speed, offroad, alinhamento (per-frame, transparente).
+//     ASI so escreve m_nCruiseSpeed e m_nCarDrivingStyle; CLEO
+//     reescreve-os ao mudar de modo (tecla 4) — sem conflito.
 // =============================================================
 
 0000: NOP
@@ -167,7 +320,7 @@
 0006: 15@ = 1
 0006: 23@ = 0
 0006: 28@ = 0
-0006: 29@ = 0
+0006: 29@ = 4
 0006: 30@ = 0
 0006: 31@ = 0
 
@@ -250,6 +403,43 @@
 004D: jump_if_false @INTERIOR_SYNC_SKIP
 0840: link_car 11@ to_interior 24@
 :INTERIOR_SYNC_SKIP
+
+// ---------------------------------------------------------------
+// DETECCAO DE DISPENSA DE GRUPO (STATE 1 — recruta a pe)
+//
+// Quando o jogador usa o mecanismo nativo SA para dispensar o
+// recruta (apontar arma para membro e premir botao de recrutamento
+// de novo), o ped permanece vivo (056D ok) mas e removido do grupo
+// SA. O script continuaria a gerir um ped ja dispensado, impedindo
+// novo spawn (12@>0). Este bloco detecta essa situacao.
+//
+// 06EE: is_actor_in_group — retorna true se o ped esta no grupo.
+//   SASCM.ini: 06EE=2, actor %1d% in_group %2d%
+//   Condicional: pode ser usado em bloco 00D6: if directamente.
+//
+// So verifica em STATE1 (a pe): em STATE2/3, 06C9 foi chamado
+// intencionalmente em DO_ENTER_VEHICLE para remover o recruta do
+// grupo SA (evita bug de saida automatica em carros 4 portas) —
+// nesse caso a ausencia do grupo e esperada, nao e dispensa.
+//
+// Vanilla recrutas (23@==1) tambem sao verificados: se o jogador
+// os dispensar via mecanismo nativo, o mod reseta o estado.
+// ---------------------------------------------------------------
+00D6: if
+    0038: 12@ == 1
+004D: jump_if_false @DISBAND_CHECK_SKIP
+07AF: 0 24@
+00D6: if
+    0019: 24@ > 0
+004D: jump_if_false @DISBAND_CHECK_SKIP
+00D6: if
+    06EE: actor 10@ in_group 24@
+004D: jump_if_false @DISBAND_DETECTED
+0002: jump @DISBAND_CHECK_SKIP
+:DISBAND_DETECTED
+0ACD: show_text_highpriority "Recruta dispensado do grupo. 1 para novo recruta." 2500
+0002: jump @CLEANUP_RECRUIT
+:DISBAND_CHECK_SKIP
 
 // ---------------------------------------------------------------
 // TELEPORTE DE SEGURANCA — ESTADO 1 (recruta a pe)
@@ -378,7 +568,7 @@
 // 11@ preservado se carro ainda existe
 0006: 12@ = 0
 0006: 23@ = 0
-0006: 29@ = 0
+0006: 29@ = 4
 0006: 30@ = 0
 0006: 31@ = 0
 0002: jump @SPAWN_RECRUIT
@@ -555,18 +745,19 @@
 // ---------------------------------------------------------------
 // MODULO 4 — TECLA 4 (VK = 52): Modo de conducao do recruta
 //
-// Alterna entre 3 modos qualitativamente diferentes:
-//   29@ = 0  CIVICO  — traffic_behaviour 4 (FOLLOWTRAFFIC):
-//                      usa nos de rua SA — faz rotatorias, respeita
-//                      semaforos, nao vai na contra-mao. Raio 07F8=20m
-//                      (seguimento relaxado, sem rear-end). max_speed 60.
-//   29@ = 1  DIRETO  — traffic_behaviour 2 (AVOIDCARS):
-//                      ignora semaforos, vai direto ao destino, desvia
-//                      de obstaculos. Raio 07F8=10m. max_speed 100.
-//   29@ = 2  PARADO  — max_speed 0.0, para completamente.
+//   29@ = 0  CIVICO-0  — 0407(-12m)+04D3+00A7(GotoCoords=8) AvoidCars(2), 40kmh, thresh 3, guard 50m
+//   29@ = 1  CIVICO-A  — 0407(-12m)+04D3+02C2(GotoCoordsAccurate=12) AvoidCars(2), 40kmh, thresh 3, guard 50m
+//   29@ = 2  CIVICO-B  — 0407(-12m)+04D3+05D1 DriveNormal(actor task) AvoidCars(2), 40kmh, thresh 3, guard 50m
+//   29@ = 3  CIVICO-C  — 0407(-12m)+04D3+05D1 DriveAccurate(actor task) AvoidCars(2), 45kmh, thresh 7, guard 50m
+//   29@ = 4  CIVICO-D  — 06E1 EscortRearFaraway(67)+AvoidCars(2), 35kmh ★ PADRAO
+//   29@ = 5  CIVICO-E  — 06E1 FollowCarFaraway(52)+AvoidCars(2), 35kmh ★
+//   29@ = 6  CIVICO-F  — 0407(-20m)+04D3+02C2 AvoidCars(2), 30kmh, thresh 5, guard STOP8m/SLOW15m/50m
+//   29@ = 7  DIRETO    — 07F8 + AvoidCars(2), raio 20m, max 60kmh, countdown 20 ticks
+//   29@ = 8  AUTONOMO  — 0AB6 GPS waypoint + 05D1 DriveAccurate + AvoidCars(2), 50kmh
+//   29@ = 9  PARADO    — 00A9 cancela task + max_speed 0
 //
-// Aplicado em STATE2 (seguir jogador) e STATE3 (recruta dirige jogador).
-// Resetar 30@=0 forca re-emissao de 07F8 com nova configuracao.
+// Aplicado em STATE2 (recruta segue jogador) e STATE3 (recruta dirige jogador).
+// Resetar 30@=0 forca re-emissao na proxima iteracao do loop.
 // ---------------------------------------------------------------
 :CHECK_KEY_H
 00D6: if
@@ -575,29 +766,71 @@
 00D6: if
     0019: 12@ > 0
 004D: jump_if_false @FOLLOW_LOGIC
-// Cicla modo: 0 (CIVICO) → 1 (DIRETO) → 2 (PARADO) → 0
+// Cicla modo: 0→1→2→3→4→5→6→7→8→9→0
 000A: 29@ += 1
 00D6: if
-    0019: 29@ > 2
+    0019: 29@ > 9
 004D: jump_if_false @KEY_H_MSG
 0006: 29@ = 0
 :KEY_H_MSG
-// Forca re-emissao de 07F8 na proxima iteracao do loop de seguimento
+// Forca re-emissao na proxima iteracao do loop de seguimento
 0006: 30@ = 0
 // Exibe mensagem de feedback para cada modo
 00D6: if
     0038: 29@ == 0
 004D: jump_if_false @KH_CHECK1
-0ACD: show_text_highpriority "Modo CIVICO: respeita semaforos e leis (4 para mudar)" 2500
+0ACD: show_text_highpriority "CIVICO-0: 04D3+00A7 AvoidCars 40kmh (4 mudar)" 2500
 0002: jump @FOLLOW_LOGIC
 :KH_CHECK1
 00D6: if
     0038: 29@ == 1
 004D: jump_if_false @KH_CHECK2
-0ACD: show_text_highpriority "Modo DIRETO: vai direto, ignora semaforos (4 para mudar)" 2500
+0ACD: show_text_highpriority "CIVICO-A: 04D3+02C2 GotoCoordsAcc AvoidCars 40kmh (4 mudar)" 2500
 0002: jump @FOLLOW_LOGIC
 :KH_CHECK2
-0ACD: show_text_highpriority "Modo PARADO: recruta estacionado (4 para mudar)" 2500
+00D6: if
+    0038: 29@ == 2
+004D: jump_if_false @KH_CHECK3
+0ACD: show_text_highpriority "CIVICO-B: 04D3+05D1 Normal(task) AvoidCars 40kmh (4 mudar)" 2500
+0002: jump @FOLLOW_LOGIC
+:KH_CHECK3
+00D6: if
+    0038: 29@ == 3
+004D: jump_if_false @KH_CHECK4
+0ACD: show_text_highpriority "CIVICO-C: 04D3+05D1 Accurate(task) AvoidCars 45kmh (4 mudar)" 2500
+0002: jump @FOLLOW_LOGIC
+:KH_CHECK4
+00D6: if
+    0038: 29@ == 4
+004D: jump_if_false @KH_CHECK5
+0ACD: show_text_highpriority "CIVICO-D: 06E1 EscortRear+AvoidCars 35kmh (4 mudar)" 2500
+0002: jump @FOLLOW_LOGIC
+:KH_CHECK5
+00D6: if
+    0038: 29@ == 5
+004D: jump_if_false @KH_CHECK6
+0ACD: show_text_highpriority "CIVICO-E: 06E1 FollowFar+AvoidCars 35kmh (4 mudar)" 2500
+0002: jump @FOLLOW_LOGIC
+:KH_CHECK6
+00D6: if
+    0038: 29@ == 6
+004D: jump_if_false @KH_CHECK7
+0ACD: show_text_highpriority "CIVICO-F: Lookahead-30m(atras)+02C2 AvoidCars 30kmh guard (4 mudar)" 2500
+0002: jump @FOLLOW_LOGIC
+:KH_CHECK7
+00D6: if
+    0038: 29@ == 7
+004D: jump_if_false @KH_CHECK8
+0ACD: show_text_highpriority "DIRETO: vai direto ignora semaforos 60kmh (4 mudar)" 2500
+0002: jump @FOLLOW_LOGIC
+:KH_CHECK8
+00D6: if
+    0038: 29@ == 8
+004D: jump_if_false @KH_CHECK9
+0ACD: show_text_highpriority "AUTONOMO: marca waypoint no mapa e sigo-te! (4 mudar)" 2500
+0002: jump @FOLLOW_LOGIC
+:KH_CHECK9
+0ACD: show_text_highpriority "PARADO: recruta estacionado (4 mudar)" 2500
 0002: jump @FOLLOW_LOGIC
 
 // ---------------------------------------------------------------
@@ -658,7 +891,7 @@
 
 //
 // Estado 2: recruta em veiculo segue o jogador.
-// Estado 3: jogador e passageiro, recruta navega a frente (0407+00A7).
+// Estado 3: jogador e passageiro, recruta navega a frente (0407+00A7+04D3 snap CIVICO).
 //
 // 056D/056E verificam validade dos handles antes de operar;
 // handles invalidos (ped morto, carro destruido) causam crash.
@@ -745,34 +978,42 @@
 00AA: 11@ 25@ 26@ 8@
 0002: jump @STATE3_DRIVE
 :STATE3_FORWARD
-// Sem waypoint — navega 150m a frente em espaco local do carro
+// Sem waypoint — navega 150m a frente em espaco local do carro.
+// Todos os modos (incluindo DIRETO) usam 00A7 aqui — snap 04D3 beneficia todos.
 0407: 11@ 0.0 150.0 0.0 6@ 7@ 8@
+04D3: 6@ 7@ 8@ 0 6@ 7@ 8@
 :STATE3_DRIVE
-// PARADO (29@==2): recruta para enquanto CJ e passageiro
+// PARADO (29@==9): recruta para enquanto CJ e passageiro
+// 00A9: cancela task drive_to activa. Sem 00A9, o carro continua a
+// tentar atingir o ultimo destino apesar de max_speed 0.0.
 00D6: if
-    0038: 29@ == 2
+    0038: 29@ == 9
 004D: jump_if_false @STATE3_MOVING
+00A9: car 11@ to_normal_driver
 00AD: set_car 11@ max_speed_to 0.0
 0002: jump @MAIN_LOOP
-// CIVICO (29@==0): FOLLOWTRAFFIC (modo 4) — usa nos de rua SA, respeita
-// semaforos, identico ao NPC de trafego padrao. max 50 km/h.
-// DIRETO (29@==1): ignora semaforos, mais rapido, max 80 km/h.
+// STATE3 usa sempre 00A7 drive_to (sem actor tasks — sem carro-alvo para 06E1).
+// DIRETO (29@==7): ignora semaforos, AvoidCars, max 80 km/h.
+// Todos os CIVICO (qualquer outro modo): AvoidCars(2), max 50 km/h.
+// AvoidCars(2) para STATE3: recruta a conduzir nao para em semaforos — menos
+// paragens bruscas para o passageiro (jogador). Consistente com STATE2.
+// DIRETO: 00AF=0 (sem road-following — velocidade alta 80kmh, recruta nao-agressivo).
+// CIVICO: 00AF=1 (follow road + drive back if blocked) — melhora 00A7 road navigation.
 :STATE3_MOVING
 00D6: if
-    0038: 29@ == 1
-004D: jump_if_false @STATE3_CIVICO
+    0038: 29@ == 7
+004D: jump_if_false @STATE3_CIV
 00AD: set_car 11@ max_speed_to 80.0
 00AE: set_car 11@ traffic_behaviour_to 2
-00AF: set_car 11@ driver_behaviour_to 5
-0002: jump @STATE3_EXEC
-:STATE3_CIVICO
-00AD: set_car 11@ max_speed_to 50.0
-// FOLLOWTRAFFIC (4): usa nos de rua SA, faz rotatorias, respeita semaforos —
-// identico ao NPC padrao. Melhor que STOPFORCARS(0) que causava paradas abruptas.
-00AE: set_car 11@ traffic_behaviour_to 4
-// driver_behaviour_to 0 = motorista passivo, nao-agressivo.
-// Evitar 00A9 (to_normal_driver): reseta m_nCruiseSpeed para 20 km/h.
 00AF: set_car 11@ driver_behaviour_to 0
+0002: jump @STATE3_EXEC
+:STATE3_CIV
+// Todos os modos CIVICO (incluindo AUTONOMO): AvoidCars(2) + max 50 km/h.
+// Velocidade unica para STATE3 — evita diferenca de comportamento entre modos.
+// 00AF=1: follow road + drive back if blocked — melhor road navigation com 00A7.
+00AD: set_car 11@ max_speed_to 50.0
+00AE: set_car 11@ traffic_behaviour_to 2
+00AF: set_car 11@ driver_behaviour_to 1
 :STATE3_EXEC
 00A7: car 11@ drive_to 6@ 7@ 8@
 0002: jump @MAIN_LOOP
@@ -839,15 +1080,14 @@
 03C0: 3@ 22@
 
 // JOGADOR EM VEICULO:
-// 07F8: follow_car — IA de perseguicao dinamica nativa. O motor
-// calcula rotas em tempo real, contorna obstaculos e mantem o
-// recruta na mesma faixa do jogador.
-// Dedup 30@: 07F8 so e re-emitido quando o carro do jogador muda
-// ou o modo muda (30@=0 forcado), evitando jitter por re-emissao.
+// CIVICO-A/B/C: 04D3 (nearest road node ao jogador) + 00A7 (drive_to) com
+// dedup por contagem regressiva em 30@ (>0=aguardar, 0=re-emitir).
+// O AI navega o grafo de nos de estrada ate ao destino — igual ao trafego normal.
+// DIRETO: 07F8 (follow_car) com countdown dedup 20 ticks (re-issue periodica, recover offroad).
 //
 // Veiculos aereos/maritimos: recruta terrestre nao pode seguir.
 // 04C8 cobre helicoptero E aviao. 04A7 cobre barcos.
-// 30@=0 forca re-emissao de 07F8 quando jogador voltar ao solo.
+// 30@=0 forca re-emissao quando jogador voltar ao solo.
 00D6: if
     04C8: actor 3@ driving_flying_vehicle
 004D: jump_if_false @SF_CHECK_BOAT
@@ -862,54 +1102,395 @@
 0006: 30@ = 0
 0002: jump @MAIN_LOOP
 
-// Modo PARADO (29@==2): para imediatamente, sem emitir follow_car.
+// Modo PARADO (29@==9): para imediatamente, sem emitir follow.
+// 00A9: cancela task activa (07F8 ou 06E1). Apenas max_speed 0.0 nao e suficiente
+// — o motor de IA continua a tentar seguir mesmo com velocidade maxima 0.
+// 30@=0: forca re-emissao quando o modo for alterado para nao-PARADO.
 :SF_MODE_CHECK
 00D6: if
-    0038: 29@ == 2
+    0038: 29@ == 9
 004D: jump_if_false @SF_DRIVE_MODE
+00A9: car 11@ to_normal_driver
 00AD: set_car 11@ max_speed_to 0.0
+0006: 30@ = 0
 0002: jump @MAIN_LOOP
 :SF_DRIVE_MODE
-// CIVICO (29@==0): traffic_behaviour 4 (FOLLOWTRAFFIC) — usa nos de rua
-// SA, respeita semaforos, faz rotatorias correctamente, identico ao NPC
-// de trafego padrao. Raio 07F8=20m (seguimento relaxado, sem rear-end).
-// DIRETO (29@==1): traffic_behaviour 2 (AVOIDCARS) — ignora semaforos,
-// vai direto ao alvo desviando activamente. Raio 07F8=10m.
-// driver_behaviour_to 5 em ambos: mantem carro em movimento sem parar
-// para outros veiculos dentro do raio de seguimento (evita o bug em que
-// o carro parava ao se aproximar do jogador dentro dos 10/20m).
-// 00AE/00AF sao atributos persistentes — colocados dentro de
-// SF_REISSUE_FOLLOW para nao serem chamados a cada 300ms (o que
-// cancelaria a task 07F8 activa e causaria a paragem descrita no bug).
-00D6: if
-    0038: 29@ == 0
-004D: jump_if_false @SF_DIRETO
-00AD: set_car 11@ max_speed_to 60.0
-0002: jump @SF_APPLY_FOLLOW
-:SF_DIRETO
-00AD: set_car 11@ max_speed_to 100.0
+// DIRETO (29@==7): 07F8 raio 20m, countdown 20 ticks (re-issue periodica offroad).
+// CIVICO-F (29@==6): Lookahead -30m(atras) 04D3+02C2, dedup countdown 30@.
+// AUTONOMO (29@==8): 0AB6 GPS waypoint + 05D1 DriveAccurate, dedup countdown 30@.
+// CIVICO-D/E (29@==4/5): 06E1 EscortFar/FollowFar, dedup 22@==30@.
+// CIVICO-0/A/B/C (29@<=3): coord-based + speed guard, dedup countdown 30@.
 :SF_APPLY_FOLLOW
-// Re-emite 07F8 + comportamentos apenas quando o carro do jogador muda.
 00D6: if
-    0038: 22@ == 30@
-004D: jump_if_false @SF_REISSUE_FOLLOW
+    0038: 29@ == 7
+004D: jump_if_false @SF_CIVICO_F_CHECK
+// DIRETO (7): AvoidCars(2) + raio 20m, dedup countdown 30@ (re-issue a cada 20 ticks / 6s).
+// Raio 20m: recruta aceita beira-de-canal/offroad (~15-20m do jogador) como posicao valida,
+//   evitando que o 07F8 fique a tentar alcancar um ponto inacessivel em loop.
+// Countdown 20 ticks (6s): 07F8 re-issued periodicamente. 6s e suficiente para que o motor
+//   SA reconheca o novo destino apos um "stuck" offroad, sem re-emitir demasiado rapido
+//   (o que cancelaria a manobra de recuperacao em curso). Mais longo que CIVICO (3-7 ticks)
+//   porque 07F8 tem gestao de stuck interna — so precisa de re-issue ocasional.
+// Countdown vs car-handle: re-issue periodica recupera 07F8 quando a road-nav fica stuck
+//   (ex: jogador entrou num canal — road nodes nao cobrem o interior do canal).
+00D6: if
+    0019: 30@ > 0
+004D: jump_if_false @SF_DIRETO_ISSUE
+000F: 30@ -= 1
 0002: jump @MAIN_LOOP
-:SF_REISSUE_FOLLOW
-0006: 30@ = 22@
-// CIVICO: traffic_behaviour 4 (FOLLOWTRAFFIC) + raio 20m
-// DIRETO: traffic_behaviour 2 (AVOIDCARS) + raio 10m
-00D6: if
-    0038: 29@ == 0
-004D: jump_if_false @SF_REISSUE_DIRETO
-00AE: set_car 11@ traffic_behaviour_to 4
-00AF: set_car 11@ driver_behaviour_to 5
+:SF_DIRETO_ISSUE
+0006: 30@ = 20
+00AD: set_car 11@ max_speed_to 60.0
+00AE: set_car 11@ traffic_behaviour_to 2
+00AF: set_car 11@ driver_behaviour_to 0
 07F8: car 11@ follow_car 22@ radius 20.0
 0002: jump @MAIN_LOOP
-:SF_REISSUE_DIRETO
-00AE: set_car 11@ traffic_behaviour_to 2
-00AF: set_car 11@ driver_behaviour_to 5
-07F8: car 11@ follow_car 22@ radius 10.0
+:SF_CIVICO_F_CHECK
+00D6: if
+    0038: 29@ == 6
+004D: jump_if_false @SF_CIVICO_AUTO_CHECK
+// CIVICO-F (6): Lookahead -20m — ponto 20m ATRAS do carro do jogador.
+//
+// Logica: 0407 com offset Y=-20m aponta para onde o jogador ESTEVE.
+// Recruta sempre navega para tras do jogador → nunca se coloca a frente.
+// 04D3: snap desse ponto para o no de estrada mais proximo.
+// 02C2 (GotoCoordsAccurate=12): path preciso via road nodes.
+// Guarda: STOP <8m, SLOW <15m — impede que recruta derrape para a frente do jogador.
+// AvoidCars(2): desvia obstaculos, ignora semaforos. Sem 073B.
+// max 30 km/h. Threshold 5 ticks (1.5s): mais estavel que 3.
+00D6: if
+    0019: 30@ > 0
+004D: jump_if_false @SF_CIVICO_F_ISSUE
+000F: 30@ -= 1
 0002: jump @MAIN_LOOP
+:SF_CIVICO_F_ISSUE
+// CIVICO-F: guarda anti-colisao — "derrapa na frente" ocorre quando
+// o recruta aborda a alta velocidade e o jogador trava. Guard impede isso.
+// 00F2: ator-a-ator (funciona com ambos dentro do carro).
+// Zona STOP (<=8m): cancela task + max_speed 0. Para completamente.
+00D6: if
+    00F2: 10@ 3@ 8.0 8.0 0
+004D: jump_if_false @SF_F_SLOW_CHECK
+00A9: car 11@ to_normal_driver
+00AD: set_car 11@ max_speed_to 0.0
+0006: 30@ = 0
+0002: jump @MAIN_LOOP
+:SF_F_SLOW_CHECK
+// Zona SLOW (8-15m): limita a 15 km/h; 30@=2 (2 ticks × 300ms = 600ms cooldown, evita tight-loop).
+00D6: if
+    00F2: 10@ 3@ 15.0 15.0 0
+004D: jump_if_false @SF_F_DISPATCH
+00AD: set_car 11@ max_speed_to 15.0
+0006: 30@ = 2
+0002: jump @MAIN_LOOP
+:SF_F_DISPATCH
+// Guarda player parado (CIVICO-F): alvo esta 20m atras do jogador (Y=-20).
+// Threshold 22m: offset Y=-20 (20m atras) + 2m margem.
+//   SC_DISPATCH usa 14m porque o offset de CIVICO-0/A/B/C e Y=-12 (12m atras).
+// Se o jogador esta parado E o recruta ja esta na zona alvo (<=22m do jogador),
+// para completamente em vez de re-despachar ao mesmo no de estrada → evita spinning.
+00D6: if
+    01C1: car 22@ stopped
+004D: jump_if_false @SF_F_PLAYER_MOVING
+00D6: if
+    00F2: 10@ 3@ 22.0 22.0 0
+004D: jump_if_false @SF_F_PLAYER_MOVING
+00A9: car 11@ to_normal_driver
+00AD: set_car 11@ max_speed_to 0.0
+0006: 30@ = 10
+0002: jump @MAIN_LOOP
+:SF_F_PLAYER_MOVING
+0407: 22@ 0.0 -20.0 0.0 6@ 7@ 8@  // 20m ATRAS do carro do jogador
+04D3: 6@ 7@ 8@ 0 6@ 7@ 8@
+// Guarda de proximidade (mesmo mecanismo que SC_PLAYER_MOVING):
+// se no de estrada > 50m do jogador → sem estrada proxima → nao despachar.
+00D6: if
+    00EC: 3@ 6@ 7@ 50.0 50.0 0  // jogador dentro de 50m do no snapado?
+004D: jump_if_false @MAIN_LOOP   // nao: off-road/agua, recruta fica parado
+00AD: set_car 11@ max_speed_to 30.0
+00AE: set_car 11@ traffic_behaviour_to 2  // AvoidCars(2): desvia obstaculos, ignora semaforos
+// 00AF=1 (follow road + drive back if blocked): road navigation via 02C2.
+00AF: set_car 11@ driver_behaviour_to 1
+02C2: car 11@ drive_to 6@ 7@ 8@
+0006: 30@ = 5
+0002: jump @MAIN_LOOP
+:SF_CIVICO_AUTO_CHECK
+00D6: if
+    0038: 29@ == 8
+004D: jump_if_false @SF_CIVICO_06E1_CHECK
+// ---------------------------------------------------------------
+// AUTONOMO (8): recruta navega para o waypoint GPS do mapa.
+// Jogador pode seguir atras para avaliar a conducao de forma
+// independente — sem interferir na trajetoria do recruta.
+//
+// 0AB6: le coords do waypoint radar do mapa (IF+SET).
+//   SASCM: 0AB6=3,store_target_marker_coords_to %1d% %2d% %3d%
+//   Retorna true+coords se waypoint activo; false se nao ha waypoint.
+// 05D1 DriveMode=Accurate(1): TaskCarDriveToCoordDriver com pathfinding
+//   mais preciso. DriveMode=Accurate optimiza faixa em road nodes.
+// AvoidCars(2): desvia de obstaculos, ignora semaforos.
+// Threshold 30 ticks (9s): destino e fixo — pouco re-emissao necessaria.
+// NOTA: Mapa SA armazena Z=0 para o waypoint. 00AA le o Z real do carro
+//   do recruta para nao dar destino subterraneo.
+// ---------------------------------------------------------------
+00D6: if
+    0019: 30@ > 0
+004D: jump_if_false @SF_AUTONOMO_ISSUE
+000F: 30@ -= 1
+0002: jump @MAIN_LOOP
+:SF_AUTONOMO_ISSUE
+00D6: if
+    0AB6: 6@ 7@ 8@
+004D: jump_if_false @SF_AUTONOMO_STOP
+// Waypoint definido: snap para no de estrada e navega via actor task.
+// 04D3 corrige X/Y/Z para o no de estrada real — Z do waypoint do mapa (tipicamente 0)
+// e substituido pelo Z do no de estrada mais proximo, evitando destino subterraneo.
+04D3: 6@ 7@ 8@ 0 6@ 7@ 8@
+// AvoidCars(2): desvia de obstaculos, ignora semaforos.
+00AD: set_car 11@ max_speed_to 50.0
+00AE: set_car 11@ traffic_behaviour_to 2
+// 05D1: actor=10@ car=11@ destX=6@ destY=7@ destZ=8@ speed=50 DriveMode=Accurate(1) model=0 DrivingMode=AvoidCars(2)
+05D1: 10@ 11@ 6@ 7@ 8@ 50.0 1 0 2
+0006: 30@ = 30
+0002: jump @MAIN_LOOP
+:SF_AUTONOMO_STOP
+// Sem waypoint: para e pede para marcar ponto no mapa.
+00A9: car 11@ to_normal_driver
+00AD: set_car 11@ max_speed_to 0.0
+0ACD: show_text_highpriority "AUTONOMO: marque um waypoint no mapa! (4 mudar)" 3000
+0006: 30@ = 10
+0002: jump @MAIN_LOOP
+:SF_CIVICO_06E1_CHECK
+// CIVICO-D (4) e CIVICO-E (5): 06E1 auto-gere; dedup por carro do jogador.
+// 06E1 tem gestao de distancia interna — nao usa speed guard.
+// Velocidade 35 km/h: mais baixa para melhor navegacao em curvas.
+00D6: if
+    0019: 29@ > 3
+004D: jump_if_false @SF_CIVICO_COUNTDOWN
+00D6: if
+    0038: 22@ == 30@
+004D: jump_if_false @SF_06E1_ISSUE
+0002: jump @MAIN_LOOP
+:SF_06E1_ISSUE
+00D6: if
+    0038: 29@ == 5
+004D: jump_if_false @SF_CIVICO_D
+// CIVICO-E (5): 06E1 FollowCarFaraway(52) + AvoidCars(2).
+// AvoidCars(2): nao para em semaforos, desvia de obstaculos. Sem 073B.
+// Velocidade 35 km/h: permite que SA complete curvas sem overshooting.
+00AD: set_car 11@ max_speed_to 35.0
+00AE: set_car 11@ traffic_behaviour_to 2
+06E1: 10@ 11@ 22@ 52 35.0 0
+0006: 30@ = 22@
+0002: jump @MAIN_LOOP
+:SF_CIVICO_D
+// CIVICO-D (4): 06E1 EscortRearFaraway(67) + AvoidCars(2).
+// AvoidCars(2): nao para em semaforos, desvia de obstaculos. Sem 073B.
+// Velocidade 35 km/h: formacao geometrica mais estavel em curvas.
+00AD: set_car 11@ max_speed_to 35.0
+00AE: set_car 11@ traffic_behaviour_to 2
+06E1: 10@ 11@ 22@ 67 35.0 0
+0006: 30@ = 22@
+0002: jump @MAIN_LOOP
+:SF_CIVICO_COUNTDOWN
+// CIVICO-0/A/B/C (0-3): coord-based tasks, contagem regressiva.
+00D6: if
+    0019: 30@ > 0
+004D: jump_if_false @SF_COORD_ISSUE
+000F: 30@ -= 1
+0002: jump @MAIN_LOOP
+:SF_COORD_ISSUE
+// ---------------------------------------------------------------
+// GUARDA DE VELOCIDADE ANTI-COLISAO (req: nao bater no jogador)
+//
+// Alvo: 12m ATRAS do carro do jogador (0407 Y=-12 espaco local).
+//   Recruta nunca alcanca a posicao exacta do jogador — colisao evitada
+//   estruturalmente. 0407 requer jogador em veiculo (22@ valido):
+//   garantido pois este bloco so executa dentro de "actor 3@ driving".
+//
+// Solucao em duas zonas usando 00F2 (ator-a-ator):
+//   00F2 funciona quando ator esta dentro de carro — posicao do ator
+//   equivale a posicao do veiculo quando ele esta a conduzir.
+//   Ref: SASCM — 00F2=5, actor %1d% near_actor %2d% radius %3d% %4d% %5h%
+//
+//   Zona STOP (<6m): 00A9 cancela task activa + max_speed 0.
+//     00A9 necessario: sem cancelar, o carro continua a tentar atingir
+//     o alvo mesmo com max_speed 0.
+//   Zona SLOW (6-10m): max_speed 15 km/h, 30@=2 para cooldown.
+//     Acompanha abrandamentos dinamicos do jogador sem re-emitir destino.
+//     Quando jogador acelera e fica >10m, 30@=0 → dispatch normal.
+//   Com alvo a -12m: recruta natural em ~12m do jogador (fora da zona SLOW).
+//   Zonas so activam se o recruta ULTRAPASSAR o alvo (ex: jogador travou).
+//
+// Como o SA road graph lida com curvas:
+//   00A7/02C2/05D1 define destino final. SA internamente planeia o
+//   caminho no-a-no via CCarCtrl_PickNextNodeAccordingStrategy.
+//   Em cada no, CCarCtrl_FindSpeedMultiplierWithSpeedFromNodes le o
+//   limite de velocidade do LINK (conexao entre nos) e reduz velocidade
+//   automaticamente em curvas fechadas. Scripts nao podem ler esses
+//   valores mas BENEFICIAM deles ao usar 00A7/02C2/05D1 com destino snapped.
+//   CHAVE: nao re-emitir demasiado rapido (< 3 ticks) — interrompe a
+//   transicao no-a-no no meio da curva. Com alvo -12m o caminho e mais
+//   curto; 3 ticks (0.9s) sao suficientes para CIVICO-0/A/B.
+//   CIVICO-C (Accurate) usa 7 ticks (2.1s): ClipToLink precisa de mais tempo.
+// ---------------------------------------------------------------
+// Alvo: 12m ATRAS do carro do jogador em espaco local → 0407 Y=-12.
+// 0407: get_offset_from_car car=22@ right=0.0 front=-12.0 up=0.0 → outX=6@ outY=7@ outZ=8@
+// 04D3 dentro de cada modo faz o snap para no de estrada.
+0407: 22@ 0.0 -12.0 0.0 6@ 7@ 8@
+// Zona STOP: recruta demasiado proximo → cancela task e para.
+00D6: if
+    00F2: 10@ 3@ 6.0 6.0 0
+004D: jump_if_false @SC_SLOW_CHECK
+00A9: car 11@ to_normal_driver
+00AD: set_car 11@ max_speed_to 0.0
+0006: 30@ = 0
+0002: jump @MAIN_LOOP
+:SC_SLOW_CHECK
+// Zona SLOW: recruta proximo → abrandamento; 30@=2 (2 ticks × 300ms = 600ms cooldown, evita tight-loop).
+00D6: if
+    00F2: 10@ 3@ 10.0 10.0 0
+004D: jump_if_false @SC_DISPATCH
+00AD: set_car 11@ max_speed_to 15.0
+0006: 30@ = 2
+0002: jump @MAIN_LOOP
+:SC_DISPATCH
+// Recruta fora das zonas de guarda → dispatch normal por modo.
+// Guarda player parado: evita re-dispatch/spinning quando jogador esta estacionado.
+// Se o carro do jogador esta parado E o recruta ja esta perto da zona alvo (<=14m do jogador),
+// para completamente em vez de re-emitir drive_to ao mesmo no de estrada.
+// Cooldown 30@=10 (10 ticks / 3s): intervalo de re-checagem quando parado.
+//   10 ticks e maior que qualquer threshold de modo (max 7 para CIVICO-C) para
+//   evitar que este guard seja imediatamente re-avaliado apos o cooldown e
+//   provoque re-dispatch no mesmo frame. Objetivo: "re-verificar se jogador
+//   continua parado daqui a 3 segundos" — nao alinha com thresholds de dispatch.
+00D6: if
+    01C1: car 22@ stopped
+004D: jump_if_false @SC_PLAYER_MOVING
+00D6: if
+    00F2: 10@ 3@ 14.0 14.0 0
+004D: jump_if_false @SC_PLAYER_MOVING
+00A9: car 11@ to_normal_driver
+00AD: set_car 11@ max_speed_to 0.0
+0006: 30@ = 10
+0002: jump @MAIN_LOOP
+:SC_PLAYER_MOVING
+// 6@/7@/8@ ja contem o ponto -12m (calculado antes de SF_COORD_ISSUE).
+// ---------------------------------------------------------------
+// GUARDA DE PROXIMIDADE DE NO DE ESTRADA (anti-"louco" off-road)
+//
+// Problema: 04D3 SEMPRE devolve ALGUM no de estrada, mesmo que o
+// jogador esteja em agua, no meio do mar ou numa montanha sem estrada.
+// Nesse caso, o no retornado pode estar a 200-500m — o recruta
+// parte em direcao errada e parece "louco".
+//
+// Solucao: testar o snap ANTES do dispatch. Se o no mais proximo
+// do ponto -12m estiver a >50m do jogador, o jogador esta longe de
+// qualquer estrada → nao despachar, recruta fica parado.
+// 50m e suficiente para cobrir estradas normais (nos SA tipicamente
+// 10-30m de distancia), mas filtra agua/montanha (no a >60m+).
+//
+// 00EC: locate_char_any_means_2d — actor [3@] x [6@] y [7@]
+//   xRadius [50.0] yRadius [50.0] sphere [0]
+//   Retorna TRUE se actor 3@ (jogador) esta dentro do raio 50m do ponto (6@,7@).
+// ---------------------------------------------------------------
+04D3: 6@ 7@ 8@ 0 6@ 7@ 8@  // snap teste: no mais proximo do ponto -12m
+00D6: if
+    00EC: 3@ 6@ 7@ 50.0 50.0 0  // jogador dentro de 50m do no snapado?
+004D: jump_if_false @MAIN_LOOP   // nao: sem estrada proxima, nao despachar
+// No dentro de 50m: estrada existe. Restaurar ponto -12m original para
+// dispatch por modo (cada modo chama 04D3 de novo com este ponto como input).
+0407: 22@ 0.0 -12.0 0.0 6@ 7@ 8@
+00D6: if
+    0038: 29@ == 3
+004D: jump_if_false @SF_CIVICO_B_CHECK
+// CIVICO-C (3): 0407(-12m) + 04D3 + 05D1 DriveMode=Accurate(1) actor task + AvoidCars(2).
+// 6@/7@/8@ ja contem o ponto -12m calculado antes de SF_COORD_ISSUE.
+// ---------------------------------------------------------------
+// COMO O SA FAZ CURVAS (road node graph):
+//   CCarCtrl_PickNextNodeAccordingStrategy: escolhe o proximo no da rota.
+//   CCarCtrl_FindSpeedMultiplierWithSpeedFromNodes (0x424130): le o limite
+//     de velocidade do LINK (conexao entre nos) e calcula multiplicador.
+//     Em curvas fechadas → multiplicador baixo → SA trava automaticamente.
+//     Este mecanismo corre a cada frame via CCarAI_UpdateCarAI — e
+//     AUTOMATICO e correcto sem intervencao do script.
+//   CCarCtrl_ClipTargetOrientationToLink (0x422760): alinha orientacao
+//     alvo ao eixo da faixa da estrada — activo apenas em DriveMode=Accurate.
+//   CCarCtrl_DealWithBend_Racing: olha 4 nos a frente (so modo Racing).
+//
+// Normal(0) vs Accurate(1) em 05D1:
+//   Normal   → CCarAI_GetCarToGoToCoors         → CarMission=GotoCoords(8)
+//   Accurate → CCarAI_GetCarToGoToCoorsAccurate → CarMission=GotoCoordsAccurate(12)
+//   Accurate usa ClipTargetOrientationToLink: mantem faixa em curvas, trava
+//   mais cedo e de forma mais suave. Normal pode cortar curvas.
+//   Actor task (vs 02C2 directo do CIVICO-A): adiciona TempActions de gestao
+//   de stuck (Reverse=3 quando preso, HandbrakeTurnLeft/Right em curvas).
+//
+// Threshold 7 ticks (2.1s): SA precisa de tempo para completar transicao
+//   no-a-no. Re-emissao a meio da curva cancela o travamento automatico.
+// ---------------------------------------------------------------
+04D3: 6@ 7@ 8@ 0 6@ 7@ 8@
+00AD: set_car 11@ max_speed_to 45.0
+00AE: set_car 11@ traffic_behaviour_to 2
+// 05D1: actor=10@ car=11@ destX=6@ destY=7@ destZ=8@ speed=45 DriveMode=Accurate(1) model=0 DrivingMode=AvoidCars(2)
+05D1: 10@ 11@ 6@ 7@ 8@ 45.0 1 0 2
+0006: 30@ = 7
+0002: jump @MAIN_LOOP
+:SF_CIVICO_B_CHECK
+00D6: if
+    0038: 29@ == 2
+004D: jump_if_false @SF_CIVICO_A_CHECK
+// CIVICO-B (2): 0407(-12m) + 04D3 + 05D1 DriveMode=Normal(0) actor task + AvoidCars(2).
+// 6@/7@/8@ ja contem o ponto -12m calculado antes de SF_COORD_ISSUE.
+// Diferenca vs CIVICO-A (02C2 directo):
+//   05D1 usa o sistema de ACTOR TASKS do SA — o task monitoriza o progresso
+//   e pode emitir TempActions (ex: Reverse=3 quando preso, HandbrakeTurn em
+//   curvas fechadas). 02C2 (CarMission directa) nao tem este mecanismo.
+// DriveMode=Normal(0) → CCarAI_GetCarToGoToCoors → CarMission=GotoCoords(8) interno.
+// AvoidCars(2): desvia obstaculos, ignora semaforos. max 40 km/h. Threshold 3 ticks.
+04D3: 6@ 7@ 8@ 0 6@ 7@ 8@
+00AD: set_car 11@ max_speed_to 40.0
+00AE: set_car 11@ traffic_behaviour_to 2
+// 05D1: actor=10@ car=11@ destX=6@ destY=7@ destZ=8@ speed=40 DriveMode=Normal(0) model=0 DrivingMode=AvoidCars(2)
+05D1: 10@ 11@ 6@ 7@ 8@ 40.0 0 0 2
+0006: 30@ = 3
+0002: jump @MAIN_LOOP
+:SF_CIVICO_A_CHECK
+00D6: if
+    0038: 29@ == 1
+004D: jump_if_false @SF_CIVICO_0
+// CIVICO-A (1): 0407(-12m) + 04D3 + 02C2 (GotoCoordsAccurate=12) CarMission directa + AvoidCars(2).
+// 6@/7@/8@ ja contem o ponto -12m calculado antes de SF_COORD_ISSUE.
+// 02C2 usa GotoCoordsAccurate=12: usa CCarAI_GetCarToGoToCoorsAccurate internamente.
+// Sem actor task: CarMission gerida por CCarAI_UpdateCarAI a cada frame.
+// 00AF=1 (follow road + drive back if blocked): complementa a road navigation de 02C2.
+// AvoidCars(2): desvia obstaculos, ignora semaforos. max 40 km/h. Threshold 3 ticks.
+04D3: 6@ 7@ 8@ 0 6@ 7@ 8@
+00AD: set_car 11@ max_speed_to 40.0
+00AE: set_car 11@ traffic_behaviour_to 2
+// 00AF bitmask (set_car_driver_behaviour, sa-db 2008 confirmed):
+//   0001=1: follow road + drive back if blocked (correcto para road navigation)
+//   0010=2: kill player | 0100=4: drive to player and stop | 1000=8: ignore road-paths
+// Usamos 1 (follow road) para que a AI do SA siga a estrada correctamente.
+00AF: set_car 11@ driver_behaviour_to 1
+02C2: car 11@ drive_to 6@ 7@ 8@
+0006: 30@ = 3
+0002: jump @MAIN_LOOP
+:SF_CIVICO_0
+// CIVICO-0 (0): 0407(-12m) + 04D3 (snap road node) + 00A7 (GotoCoords=8) CarMission directa + AvoidCars(2).
+// 6@/7@/8@ ja contem o ponto -12m calculado antes de SF_COORD_ISSUE.
+// 00A7 usa GotoCoords=8: usa CCarAI_GetCarToGoToCoors internamente (menos preciso que A/B/C).
+// 04D3 garante alvo num no de estrada valido. AvoidCars(2). Sem 073B. max 40 km/h.
+// Threshold 3 ticks (0.9s): alvo -12m move-se com o jogador, sem risco de colisao directa.
+// 00AF=1 (follow road): activa road-following behaviour para complementar a CarMission de 00A7.
+04D3: 6@ 7@ 8@ 0 6@ 7@ 8@
+00AD: set_car 11@ max_speed_to 40.0
+00AE: set_car 11@ traffic_behaviour_to 2
+00AF: set_car 11@ driver_behaviour_to 1
+00A7: car 11@ drive_to 6@ 7@ 8@
+0006: 30@ = 3
+0002: jump @MAIN_LOOP
+
 
 // JOGADOR A PE — Zona de seguranca anti-atropelamento (3 niveis)
 //
@@ -926,10 +1507,14 @@
 // do ator e a posicao do veiculo quando ele esta dirigindo.
 // Ref: SASCM.ini — 00F2=5, actor %1d% near_actor %2d% radius %3d% %4d% %5h%
 :FOLLOW_PLAYER_ON_FOOT
-// Modo PARADO (29@==2): recruta nao avanca mesmo com jogador a pe
+// Modo PARADO (29@==9): recruta nao avanca mesmo com jogador a pe
+// 00A9: cancela task 00A7 drive_to residual (ex: jogador saiu do carro
+// enquanto recruta ainda se aproximava). Sem 00A9, o carro continua a
+// dirigir para o ultimo destino mesmo com max_speed 0.0.
 00D6: if
-    0038: 29@ == 2
+    0038: 29@ == 9
 004D: jump_if_false @FPF_DO_ZONES
+00A9: car 11@ to_normal_driver
 00AD: set_car 11@ max_speed_to 0.0
 0002: jump @MAIN_LOOP
 :FPF_DO_ZONES
@@ -951,20 +1536,31 @@
 00AE: set_car 11@ traffic_behaviour_to 0
 0002: jump @MAIN_LOOP
 // Zona CHASE: fora dos 12m → dirigir em direcao ao jogador
-// CIVICO (29@==0): traffic_behaviour 4 (FOLLOWTRAFFIC) — usa nos de rua
-//   para se aproximar do jogador a pe, fazendo curvas correctamente.
-// DIRETO (29@==1): traffic_behaviour 1 (SLOWDOWNFORCARS) — mais direto.
+// DIRETO (29@==7): AvoidCars + max 30 km/h.
+// Todos os outros CIVICO (0-6, AUTONOMO=8): StopForCars + max 25 ou 20 km/h.
+// Velocidades baixas → StopForCars(0) e aceitavel para abordagem pedonal cautelosa.
 :FPF_DRIVE_CLOSER
 00D6: if
-    0038: 29@ == 0
-004D: jump_if_false @FPF_CHASE_DIRETO
-00AD: set_car 11@ max_speed_to 20.0
-00AE: set_car 11@ traffic_behaviour_to 4
+    0038: 29@ == 7
+004D: jump_if_false @FPF_CHASE_CIVICO_HIGH
+00AD: set_car 11@ max_speed_to 30.0
+00AE: set_car 11@ traffic_behaviour_to 2
 00A7: car 11@ drive_to 6@ 7@ 8@
 0002: jump @MAIN_LOOP
-:FPF_CHASE_DIRETO
-00AD: set_car 11@ max_speed_to 30.0
-00AE: set_car 11@ traffic_behaviour_to 1
+:FPF_CHASE_CIVICO_HIGH
+// Modos CIVICO-C/D/E/F/AUTONOMO (3,4,5,6,8): StopForCars + max 25.
+// 29@>2 cobre tambem AUTONOMO(8): comportamento identico em chase pedonal.
+00D6: if
+    0019: 29@ > 2
+004D: jump_if_false @FPF_CHASE_CIVICO
+00AD: set_car 11@ max_speed_to 25.0
+00AE: set_car 11@ traffic_behaviour_to 0
+00A7: car 11@ drive_to 6@ 7@ 8@
+0002: jump @MAIN_LOOP
+:FPF_CHASE_CIVICO
+// CIVICO-0/A/B (0,1,2): StopForCars (0) — NPC padrao, para em fila
+00AD: set_car 11@ max_speed_to 20.0
+00AE: set_car 11@ traffic_behaviour_to 0
 00A7: car 11@ drive_to 6@ 7@ 8@
 0002: jump @MAIN_LOOP
 
@@ -1255,30 +1851,23 @@
 :WE_TIMEOUT_DONE
 0002: jump @MAIN_LOOP
 //
-// Os tres opcodes abaixo controlam o comportamento do motorista
-// usando a API nativa do RenderWare:
+// Os opcodes abaixo definem o comportamento inicial do motorista.
+// Serao sobrescritos na primeira iteracao do MAIN_LOOP pelo modo 29@.
 //
-// 00AD: set_car max_speed_to (float, unidades internas ~km/h)
-//   50.0 = acompanha o jogador sem ultrapassar nem ficar para tras.
+// 00AD: set_car max_speed_to — velocidade maxima em unidades internas (~km/h).
 //   Ref: Project Cerbera — velocidades reais de handling SA
 //        https://projectcerbera.com/gta/sa/tutorials/handling
 //
-// 00AE: set_car traffic_behaviour_to (int, ver tabela no README)
-//   Modo 2 (AVOIDCARS): ignora semaforos mas desvia ativamente
-//   de outros carros. Escolhido pois o recruta e aliado — nao
-//   pode atropelar civis (geraria wanted level desnecessario).
-//   Alternativa mais realista: modo 5 (FOLLOWTRAFFIC_AVOIDCARS).
-//   Ref: GTAMods Wiki — opcode 00AE
-//   Ref: yugecin/scmcleoscripts (comparacao de modos de conducao)
+// 00AE: set_car traffic_behaviour_to — estilo de trafego para modos 07F8.
+//   Inicializado com 0 (StopForCars) como fallback. CIVICO-A/B usam 06E1
+//   (que ignora 00AE) e CIVICO-C/DIRETO definem 00AE no proprio re-issue.
+//   Ref: GTAMods Wiki — opcode 00AE; enums.txt DrivingMode.
 //
-// 00AF: set_car driver_behaviour_to (int)
-//   Valor 5: motorista responsivo — corrige trajetoria rapidamente,
-//   reage a obstaculos imprevistos com menos latencia.
-//   Ref: Sanny Builder Library — opcode 00AF
+// 00AF: set_car_mission — usar sempre 0 (None) para modos 07F8; nao chamar
+//   para modos 06E1 (a task 06E1 define internamente a CarMission=52/53).
 //
-// Nota — erro 0097: todos os parametros float (max_speed, radius)
-// devem ter o sufixo .0 explicitamente no Sanny Builder para evitar
-// interpretacao como int e causar o erro de tipo 0097.
+// Nota — erro 0097: parametros float (max_speed, radius) devem ter
+// sufixo .0 explicitamente no Sanny Builder para evitar erro de tipo.
 // ===============================================================
 :SETUP_VEHICLE_AI
 
@@ -1288,9 +1877,13 @@
 0852: set_car 11@ damages_visible 0
 0224: set_car 11@ health_to 1750
 
-00AD: set_car 11@ max_speed_to 50.0
+// Inicializa com CIVICO-D (modo padrao 29@=4). 06E1 sera emitido no primeiro loop.
+// AvoidCars(2): padrao para todos os modos — desvia obstaculos, ignora semaforos.
+// 073B REMOVIDO: contramao permitida — melhora navegacao em cruzamentos e curvas
+// onde o no de estrada correcto esta no sentido oposto.
+00AD: set_car 11@ max_speed_to 35.0
 00AE: set_car 11@ traffic_behaviour_to 2
-00AF: set_car 11@ driver_behaviour_to 5
+00AF: set_car 11@ driver_behaviour_to 0
 
 // 0526: previne que o recruta seja arrancado do banco do motorista por NPCs.
 // Ref: SASCM.ini — 0526=2,set_actor %1d% stay_in_car_when_jacked %2d%
@@ -1299,12 +1892,12 @@
 // 06C9 ja foi chamado em DO_ENTER_VEHICLE antes de 05CB.
 // Nao repetir aqui — recruta ja esta fora do grupo desde antes de entrar.
 
-// Reset 30@ para forcar emissao de 07F8 na primeira iteracao do loop.
+// Reset 30@ para forcar re-emissao na primeira iteracao do loop.
 0006: 30@ = 0
 
 0006: 12@ = 2
 
-0ACD: show_text_highpriority "Recruta seguindo em veiculo! (IA 07F8 ativa)" 3000
+0ACD: show_text_highpriority "Seguindo! 4=0:CIV0 1:A 2:B 3:C 4:D 5:E 6:F 7:DIR 8:AUTO 9:STOP" 3000
 
 // Debounce
 0001: wait 600 ms
@@ -1368,7 +1961,7 @@
 0006: 14@ = 0
 0006: 15@ = 1
 0006: 23@ = 0
-0006: 29@ = 0
+0006: 29@ = 4
 0006: 30@ = 0
 0006: 31@ = 0
 // Resetar drive-by mode ao sair (seguranca)
